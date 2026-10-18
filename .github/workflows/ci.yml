@@ -17,3 +17,11 @@ jobs:
         run: cargo test --all-targets
       - name: Build release
         run: cargo build --release
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: metaclean-${{ runner.os }}
+          path: |
+            target/release/metaclean
+            target/release/metaclean.exe
+          if-no-files-found: error
