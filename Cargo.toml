@@ -1,0 +1,7 @@
+[package]
+name = "metaclean"
+version = "0.1.0"
+edition = "2021"
+description = "Local, lossless metadata privacy cleaner for PNG, JPEG and WebP"
+
+[dependencies]
