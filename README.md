@@ -109,6 +109,7 @@ resolution = true
 
 ### コンテナ固有の制約
 
+- **PNGの旧形式**：ExifTool/ImageMagick/GIMPなどで使われる `Raw profile type exif` / `APP1` / `8bim` / `iptc` は、個人情報が残りやすいため、通常の `other_text=true` に依存せず `exif` / `iptc` 設定で分類します。`Raw profile type icc/icm` は色プロファイル扱いです。
 - **EXIF**：`exif=false` では既知のIFD0、Exif SubIFD、GPS IFDタグのみを書き出します。MakerNote、未知のEXIFタグ、Exif IFD1の埋め込みサムネイルなどは常に破棄されます。`unknown=true` にしても、これらが暗黙に残るわけではありません。GPS日時は `gps=true` でも `timestamps=false` なら残しません。
 - **XMP**：パーサーによる未知XML要素ごとの取捨選択ではなく、コンテナ全体の除去と、明示的に指定した一部の置換値の新規XMPへの再生成です。`title=true` 等にしても、元のXMPの該当要素だけを自動抽出して保持するわけではありません。
 - **IPTC**：JPEG APP13を一括保持・削除します。個々のIPTCタグの意味的な置換は行いません。

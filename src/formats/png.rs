@@ -277,6 +277,20 @@ mod tests {
     }
 
     #[test]
+    fn png_legacy_opaque_profiles_are_removed_by_default() {
+        let mut p = SIGNATURE.to_vec();
+        add_chunk(&mut p, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]).unwrap();
+        add_chunk(&mut p, b"zTXt", b"Raw profile type exif\0\0old GPS and account").unwrap();
+        add_chunk(&mut p, b"zTXt", b"Raw profile type 8bim\0\0old IPTC owner").unwrap();
+        add_chunk(&mut p, b"IDAT", b"pixels").unwrap();
+        add_chunk(&mut p, b"IEND", b"").unwrap();
+        let clean = clean(&p, &Config::default()).unwrap();
+        assert!(!clean.bytes.windows(b"old GPS and account".len()).any(|w| w == b"old GPS and account"));
+        assert!(!clean.bytes.windows(14).any(|w| w == b"old IPTC owner"));
+        verify(&clean.bytes, Format::Png, &Config::default()).unwrap();
+    }
+
+    #[test]
     fn c2pa_provenance_not_treated_as_unknown() {
         let mut p = SIGNATURE.to_vec();
         add_chunk(&mut p, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]).unwrap();
