@@ -5,3 +5,6 @@ edition = "2021"
 description = "Local, lossless metadata privacy cleaner for PNG, JPEG and WebP"
 
 [dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
