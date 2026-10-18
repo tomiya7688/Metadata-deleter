@@ -2,6 +2,7 @@ mod config;
 mod exif;
 mod formats;
 mod ops;
+mod xmp;
 
 use config::{Config, DEFAULT_INI};
 use ops::Mode;

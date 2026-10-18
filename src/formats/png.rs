@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::config::{Config, Setting};
+use crate::xmp;
 use crate::exif;
 use crate::formats::Cleaned;
 
@@ -46,11 +47,20 @@ fn add_chunk(out: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) -> Result<(), St
     Ok(())
 }
 
+fn add_itxt(out: &mut Vec<u8>, keyword: &[u8], text: &[u8]) -> Result<(), String> {
+    let mut data = Vec::new();
+    data.extend_from_slice(keyword);
+    // iTXt: keyword NUL, uncompressed flag & method, empty language & translation.
+    data.extend_from_slice(&[0, 0, 0, 0, 0]);
+    data.extend_from_slice(text);
+    add_chunk(out, b"iTXt", &data)
+}
+
 fn keep_known(kind: &[u8; 4], config: &Config) -> Option<bool> {
     match kind {
-        b"iCCP" | b"sRGB" | b"cHRM" | b"gAMA" | b"cICP" => Some(config.color_profile),
-        b"pHYs" => Some(config.resolution),
-        b"tIME" => Some(config.timestamps),
+        b"iCCP" | b"sRGB" | b"cHRM" | b"gAMA" | b"cICP" => Some(config.color_profile.keep()),
+        b"pHYs" => Some(config.resolution.keep()),
+        b"tIME" => Some(config.timestamps.keep()),
         // APNG, transparency, palette, and rendering-related chunks are preserved.
         b"IHDR" | b"PLTE" | b"IDAT" | b"IEND" | b"tRNS" | b"bKGD" | b"sBIT"
         | b"hIST" | b"sPLT" | b"sTER" | b"acTL" | b"fcTL" | b"fdAT" => Some(true),
@@ -70,6 +80,7 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
     let mut seen_idat = false;
     let mut seen_iend = false;
     let mut removed = 0;
+    let mut wrote_xmp = false;
     while i < input.len() {
         let chunk_start = i;
         let length_bytes: [u8; 4] = input
@@ -118,31 +129,54 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
             }
             seen_iend = true;
         }
-        let keep = if matches!(&kind, b"tEXt" | b"iTXt" | b"zTXt") {
+        if matches!(&kind, b"tEXt" | b"iTXt" | b"zTXt") {
             let nul = data.iter().position(|b| *b == 0).ok_or("invalid PNG text keyword")?;
             if nul == 0 || nul > 79 {
                 return Err("invalid PNG text keyword length".into());
             }
-            config.keep_png_keyword(&data[..nul])
-        } else if &kind == b"eXIf" {
-            config.exif
-        } else if let Some(known) = keep_known(&kind, config) {
-            known
-        } else if kind[0].is_ascii_uppercase() {
-            // Unknown critical chunks cannot safely be modified.
-            return Err(format!("unknown critical PNG chunk {}", String::from_utf8_lossy(&kind)));
-        } else {
-            config.unknown
-        };
-        if &kind == b"eXIf" && !config.exif {
+            let keyword = &data[..nul];
+            let key = String::from_utf8_lossy(keyword).to_ascii_lowercase();
+            let is_xmp = matches!(key.trim(), "xml:com.adobe.xmp" | "raw profile type xmp" | "xmp");
+            // A replacement must not retain the original XMP, which could embed
+            // the previous name in several additional fields.
+            if is_xmp && !config.xmp.keep() {
+                if !wrote_xmp {
+                    if let Some(xml) = xmp::replacement(config) {
+                        add_itxt(&mut output, b"XML:com.adobe.xmp", &xml)?;
+                    }
+                    wrote_xmp = true;
+                }
+                removed += 1;
+            } else {
+                match config.png_keyword(keyword) {
+                    Setting::Keep => output.extend_from_slice(&input[chunk_start..end]),
+                    Setting::Remove => removed += 1,
+                    Setting::Replace(value) => {
+                        add_itxt(&mut output, keyword, value.as_bytes())?;
+                        removed += 1;
+                    }
+                }
+            }
+        } else if &kind == b"eXIf" && !config.exif.keep() {
             if let Some(minimal) = exif::reduce(data, config)? {
                 add_chunk(&mut output, &kind, &minimal)?;
             }
             removed += 1;
-        } else if keep {
-            output.extend_from_slice(&input[chunk_start..end]);
         } else {
-            removed += 1;
+            let keep = if &kind == b"eXIf" {
+                config.exif.keep()
+            } else if let Some(known) = keep_known(&kind, config) {
+                known
+            } else if kind[0].is_ascii_uppercase() {
+                return Err(format!("unknown critical PNG chunk {}", String::from_utf8_lossy(&kind)));
+            } else {
+                config.unknown.keep()
+            };
+            if keep {
+                output.extend_from_slice(&input[chunk_start..end]);
+            } else {
+                removed += 1;
+            }
         }
         i = end;
         index += 1;
@@ -185,6 +219,39 @@ mod tests {
     }
 
     #[test]
+    fn replaces_creator_and_quoted_text_without_reencoding_pixels() {
+        let mut p = SIGNATURE.to_vec();
+        add_chunk(&mut p, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]).unwrap();
+        add_chunk(&mut p, b"tEXt", b"Author\0Old Google Account").unwrap();
+        add_chunk(&mut p, b"zTXt", b"Creator\0\0compressed old value").unwrap();
+        add_chunk(&mut p, b"tEXt", b"parameters\0private prompt").unwrap();
+        add_chunk(&mut p, b"IDAT", b"opaque compressed pixels").unwrap();
+        add_chunk(&mut p, b"IEND", b"").unwrap();
+        let c = Config::parse("[keep]\ncreator=\"tomiya\"\nai_generation=\"new prompt\"\n").unwrap();
+        let cleaned = clean(&p, &c).unwrap();
+        assert!(cleaned.bytes.windows(6).any(|s| s == b"tomiya"));
+        assert!(cleaned.bytes.windows(10).any(|s| s == b"new prompt"));
+        assert!(!cleaned.bytes.windows(6).any(|s| s == b"Google"));
+        assert!(!cleaned.bytes.windows(14).any(|s| s == b"private prompt"));
+        assert!(cleaned.bytes.windows(24).any(|s| s == b"opaque compressed pixels"));
+        verify(&cleaned.bytes, Format::Png, &c).unwrap();
+    }
+
+    #[test]
+    fn replaces_xmp_with_only_new_author() {
+        let mut p = png_fixture();
+        let at = p.len()-12;
+        let mut xmp_chunk = Vec::new();
+        add_chunk(&mut xmp_chunk, b"iTXt", b"XML:com.adobe.xmp\0\0\0\0\0<creator>OLD_ACCOUNT</creator>").unwrap();
+        p.splice(at..at, xmp_chunk);
+        let c = Config::parse("[keep]\ncreator=\"tomiya\"\n").unwrap();
+        let cleaned = clean(&p, &c).unwrap();
+        assert!(!cleaned.bytes.windows(11).any(|s| s == b"OLD_ACCOUNT"));
+        assert!(cleaned.bytes.windows(6).any(|s| s == b"tomiya"));
+        verify(&cleaned.bytes, Format::Png, &c).unwrap();
+    }
+
+    #[test]
     fn rejects_corrupt_crc() {
         let mut p = png_fixture();
         p[35] ^= 1;
@@ -194,7 +261,7 @@ mod tests {
     #[test]
     fn config_can_keep_generation_data() {
         let mut conf = Config::default();
-        conf.ai_generation = true;
+        conf.ai_generation = Setting::Keep;
         assert_eq!(clean(&png_fixture(), &conf).unwrap().removed, 0);
     }
 }

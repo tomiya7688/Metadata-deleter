@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::config::{Config, Setting};
+use crate::xmp;
 use crate::exif;
 use crate::formats::Cleaned;
 
@@ -44,6 +45,7 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
     let mut saw_scan = false;
     let mut saw_eoi = false;
     let mut removed = 0;
+    let mut wrote_xmp = false;
 
     while i < input.len() {
         if in_scan {
@@ -85,33 +87,63 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
         let payload = input
             .get(i + 2..end)
             .ok_or("truncated JPEG segment")?;
-        let keep = match marker {
-            0xe0 if payload.starts_with(b"JFIF\0") => config.resolution,
-            0xe1 if payload.starts_with(b"Exif\0\0") => config.exif,
-            0xe1
-                if payload.starts_with(b"http://ns.adobe.com/xap/1.0/\0")
-                    || payload.starts_with(b"http://ns.adobe.com/xmp/extension/\0") =>
-            {
-                config.xmp
-            }
-            0xe2 if payload.starts_with(b"ICC_PROFILE\0") => config.color_profile,
-            0xed if payload.starts_with(b"Photoshop 3.0\0") => config.iptc,
-            0xeb if payload.starts_with(b"JP") => config.provenance,
-            0xfe => config.comments,
-            // APP14 Adobe controls color-space interpretation: never discard as unknown.
-            0xee if payload.starts_with(b"Adobe") => true,
-            0xe0..=0xef => config.unknown,
-            _ => true, // image structure, scans, tables and frame parameters
-        };
-        if marker == 0xe1 && payload.starts_with(b"Exif\0\0") && !config.exif {
+        let is_exif = marker == 0xe1 && payload.starts_with(b"Exif\0\0");
+        let is_xmp = marker == 0xe1 && (payload.starts_with(b"http://ns.adobe.com/xap/1.0/\0")
+            || payload.starts_with(b"http://ns.adobe.com/xmp/extension/\0"));
+        let is_iptc = marker == 0xed && payload.starts_with(b"Photoshop 3.0\0");
+        if is_exif && !config.exif.keep() {
             if let Some(minimal) = exif::reduce(payload, config)? {
                 write_segment(&mut out, marker, &minimal)?;
             }
             removed += 1;
-        } else if keep {
-            out.extend_from_slice(&input[marker_start..end]);
-        } else {
+        } else if is_xmp && !config.xmp.keep() {
+            if !wrote_xmp {
+                if let Some(xml) = xmp::replacement(config) {
+                    let mut packet = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+                    packet.extend_from_slice(&xml);
+                    write_segment(&mut out, 0xe1, &packet)?;
+                }
+                wrote_xmp = true;
+            }
             removed += 1;
+        } else if is_iptc && !config.iptc.keep() {
+            // Replace IPTC attribution with a minimal XMP packet if the input
+            // had no XMP replacement yet. Raw Photoshop data is always removed.
+            if !wrote_xmp {
+                if let Some(xml) = xmp::replacement(config) {
+                    let mut packet = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+                    packet.extend_from_slice(&xml);
+                    write_segment(&mut out, 0xe1, &packet)?;
+                    wrote_xmp = true;
+                }
+            }
+            removed += 1;
+        } else if marker == 0xfe {
+            match &config.comments {
+                Setting::Keep => out.extend_from_slice(&input[marker_start..end]),
+                Setting::Remove => removed += 1,
+                Setting::Replace(value) => {
+                    write_segment(&mut out, marker, value.as_bytes())?;
+                    removed += 1;
+                }
+            }
+        } else {
+            let keep = match marker {
+                0xe0 if payload.starts_with(b"JFIF\0") => config.resolution.keep(),
+                0xe1 if is_exif => config.exif.keep(),
+                0xe1 if is_xmp => config.xmp.keep(),
+                0xe2 if payload.starts_with(b"ICC_PROFILE\0") => config.color_profile.keep(),
+                0xed if is_iptc => config.iptc.keep(),
+                0xeb if payload.starts_with(b"JP") => config.provenance.keep(),
+                0xee if payload.starts_with(b"Adobe") => true,
+                0xe0..=0xef => config.unknown.keep(),
+                _ => true,
+            };
+            if keep {
+                out.extend_from_slice(&input[marker_start..end]);
+            } else {
+                removed += 1;
+            }
         }
         if marker == 0xda {
             saw_scan = true;
@@ -167,9 +199,41 @@ mod tests {
     #[test]
     fn can_keep_exif() {
         let mut c = Config::default();
-        c.exif = true;
+        c.exif = Setting::Keep;
         let result = clean(&jpeg_fixture(), &c).unwrap();
         assert_eq!(result.removed, 2);
+    }
+
+    #[test]
+    fn replaces_xmp_author_and_com_without_touching_scan() {
+        let c = Config::parse("[keep]\ncreator=\"tomiya\"\ncomments=\"safe\"\n").unwrap();
+        let clean = clean(&jpeg_fixture(), &c).unwrap();
+        assert!(clean.bytes.windows(6).any(|s| s == b"tomiya"));
+        assert!(!clean.bytes.windows(15).any(|s| s == b"identifying XMP"));
+        assert!(!clean.bytes.windows(15).any(|s| s == b"private comment"));
+        assert!(clean.bytes.windows(4).any(|s| s == b"safe"));
+        assert!(clean.bytes.windows(9).any(|s| s == [1, 2, 0xff, 0x00, 3, 0xff, 0xd0, 4, 5]));
+        verify(&clean.bytes, Format::Jpeg, &c).unwrap();
+    }
+
+    #[test]
+    fn replaces_exif_artist() {
+        let mut p = vec![0xff, 0xd8];
+        let mut tiff = b"Exif\0\0II*\0\x08\0\0\0\x01\0".to_vec();
+        tiff.extend_from_slice(&0x013b_u16.to_le_bytes());
+        tiff.extend_from_slice(&2_u16.to_le_bytes());
+        tiff.extend_from_slice(&12_u32.to_le_bytes());
+        tiff.extend_from_slice(&26_u32.to_le_bytes());
+        tiff.extend_from_slice(&0_u32.to_le_bytes());
+        tiff.extend_from_slice(b"Old Account\0");
+        write_segment(&mut p, 0xe1, &tiff).unwrap();
+        write_segment(&mut p, 0xda, &[1, 1, 0, 0, 63, 0]).unwrap();
+        p.extend_from_slice(&[1, 2, 0xff, 0xd9]);
+        let c = Config::parse("[keep]\ncreator=\"tomiya\"\n").unwrap();
+        let cleaned = clean(&p, &c).unwrap();
+        assert!(cleaned.bytes.windows(6).any(|s| s == b"tomiya"));
+        assert!(!cleaned.bytes.windows(11).any(|s| s == b"Old Account"));
+        verify(&cleaned.bytes, Format::Jpeg, &c).unwrap();
     }
 
     #[test]
