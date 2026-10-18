@@ -39,6 +39,23 @@ pub struct Config {
     pub orientation: Setting,
     pub resolution: Setting,
     pub other_text: Setting,
+    pub title: Setting,
+    pub description: Setting,
+    pub keywords: Setting,
+    pub contact: Setting,
+    pub gps: Setting,
+    pub camera_make: Setting,
+    pub camera_model: Setting,
+    pub lens: Setting,
+    pub device_serial: Setting,
+    pub camera_settings: Setting,
+    pub image_id: Setting,
+    pub rating: Setting,
+    pub jpeg_thumbnail: Setting,
+    pub mpf: Setting,
+    pub flashpix: Setting,
+    pub ducky: Setting,
+    pub png_extension: Setting,
     pub unknown: Setting,
 }
 
@@ -59,6 +76,23 @@ impl Default for Config {
             orientation: Setting::Keep,
             resolution: Setting::Keep,
             other_text: Setting::Keep,
+            title: Setting::Keep,
+            description: Setting::Keep,
+            keywords: Setting::Keep,
+            contact: Setting::Remove,
+            gps: Setting::Remove,
+            camera_make: Setting::Remove,
+            camera_model: Setting::Remove,
+            lens: Setting::Remove,
+            device_serial: Setting::Remove,
+            camera_settings: Setting::Remove,
+            image_id: Setting::Remove,
+            rating: Setting::Keep,
+            jpeg_thumbnail: Setting::Remove,
+            mpf: Setting::Keep,
+            flashpix: Setting::Remove,
+            ducky: Setting::Remove,
+            png_extension: Setting::Keep,
             unknown: Setting::Keep,
         }
     }
@@ -150,7 +184,9 @@ impl Config {
             let value = parse_value(raw_value, line_number, key)?;
             // Binary containers and image display fields cannot be replaced by arbitrary strings.
             if value.replacement().is_some()
-                && !matches!(key, "creator" | "copyright" | "software" | "comments" | "ai_generation" | "other_text")
+                && !matches!(key, "creator" | "copyright" | "software" | "comments" | "ai_generation" | "other_text"
+                    | "title" | "description" | "keywords" | "contact" | "camera_make" | "camera_model"
+                    | "lens" | "device_serial" | "image_id")
             {
                 return Err(format!("INI line {line_number}: {key} does not support text replacement"));
             }
@@ -169,32 +205,43 @@ impl Config {
                 "orientation" => config.orientation = value,
                 "resolution" => config.resolution = value,
                 "other_text" => config.other_text = value,
+                "title" => config.title = value,
+                "description" => config.description = value,
+                "keywords" => config.keywords = value,
+                "contact" => config.contact = value,
+                "gps" => config.gps = value,
+                "camera_make" => config.camera_make = value,
+                "camera_model" => config.camera_model = value,
+                "lens" => config.lens = value,
+                "device_serial" => config.device_serial = value,
+                "camera_settings" => config.camera_settings = value,
+                "image_id" => config.image_id = value,
+                "rating" => config.rating = value,
+                "jpeg_thumbnail" => config.jpeg_thumbnail = value,
+                "mpf" => config.mpf = value,
+                "flashpix" => config.flashpix = value,
+                "ducky" => config.ducky = value,
+                "png_extension" => config.png_extension = value,
                 "unknown" => config.unknown = value,
                 _ => return Err(format!("INI line {line_number}: unknown option {key}")),
             }
         }
         // If we preserve full containers, they may still contain the original name.
-        if ["exif", "xmp", "iptc"].iter().any(|name| match *name {
-            "exif" => config.exif.keep(),
-            "xmp" => config.xmp.keep(),
-            _ => config.iptc.keep(),
-        }) && ["creator", "copyright", "software", "comments", "ai_generation", "other_text"]
-            .iter()
-            .any(|name| match *name {
-                "creator" => config.creator.replacement().is_some(),
-                "copyright" => config.copyright.replacement().is_some(),
-                "software" => config.software.replacement().is_some(),
-                "comments" => config.comments.replacement().is_some(),
-                "ai_generation" => config.ai_generation.replacement().is_some(),
-                _ => config.other_text.replacement().is_some(),
-            })
-        {
-            return Err("cannot use quoted replacements with exif=true, xmp=true or iptc=true: original private data could remain".into());
+        let has_replacement = [
+            &config.creator, &config.copyright, &config.software, &config.comments,
+            &config.ai_generation, &config.other_text, &config.title,
+            &config.description, &config.keywords, &config.contact,
+            &config.camera_make, &config.camera_model, &config.lens,
+            &config.device_serial, &config.image_id,
+        ].iter().any(|setting| setting.replacement().is_some());
+        if has_replacement && (config.exif.keep() || config.xmp.keep() || config.iptc.keep()) {
+            return Err("cannot combine text replacement with exif=true, xmp=true or iptc=true: original identifying data could remain".into());
         }
         Ok(config)
     }
 
-    /// Classify a PNG keyword without decoding its compressed text value.
+    /// Classify well-known standard and widely used PNG text keywords.
+    /// Unknown keywords retain the independent other_text policy.
     pub fn png_keyword(&self, keyword: &[u8]) -> &Setting {
         let keyword = String::from_utf8_lossy(keyword).to_ascii_lowercase();
         let key = keyword.trim();
@@ -202,31 +249,40 @@ impl Config {
             return &self.xmp;
         }
         if matches!(
-            key,
-            "parameters" | "prompt" | "negative prompt" | "workflow" | "seed"
+            key, "parameters" | "prompt" | "negative prompt" | "workflow" | "seed"
                 | "sampler" | "model" | "steps" | "cfg scale" | "generation data"
                 | "generation parameters" | "invokeai_metadata" | "comfyui"
-        ) || key.contains("stable diffusion")
-        {
+                | "generation prompt" | "ai prompt" | "positive prompt"
+        ) || key.contains("stable diffusion") || key.starts_with("comfyui") {
             return &self.ai_generation;
         }
-        if matches!(key, "author" | "artist" | "creator" | "by-line" | "owner") {
-            return &self.creator;
+        match key {
+            "author" | "artist" | "creator" | "by-line" | "byline" | "owner" | "creator name" => &self.creator,
+            "copyright" | "license owner" | "rights holder" | "rights" => &self.copyright,
+            "software" | "tool" | "encoder" | "processing software" => &self.software,
+            "creation time" | "date:create" | "date:modify" | "timestamp" | "date"
+                | "date created" | "date modified" | "datetime" | "date time" => &self.timestamps,
+            "comment" | "usercomment" | "user comment" | "notes" => &self.comments,
+            "title" | "headline" | "object name" => &self.title,
+            "description" | "caption" | "image description" | "disclaimer" | "warning"
+                | "subject" | "xp subject" => &self.description,
+            "keywords" | "keyword" | "tags" | "tag list" => &self.keywords,
+            "contact" | "email" | "email address" | "website" | "url" | "phone"
+                | "telephone" | "address" | "creator contact info" => &self.contact,
+            "location" | "gps" | "latitude" | "longitude" | "altitude" | "city"
+                | "state" | "country" | "country code" | "sublocation" => &self.gps,
+            "make" | "manufacturer" | "camera maker" => &self.camera_make,
+            "model" | "camera" | "camera model" | "device" | "source" => &self.camera_model,
+            "lens" | "lens model" | "lens make" => &self.lens,
+            "serial number" | "device serial" | "body serial number" | "lens serial number" => &self.device_serial,
+            "iso" | "exposure" | "aperture" | "focal length" | "shutter speed"
+                | "flash" | "white balance" | "capture settings" => &self.camera_settings,
+            "image id" | "image unique id" | "document id" | "instance id" => &self.image_id,
+            "rating" | "rating percent" => &self.rating,
+            _ => &self.other_text,
         }
-        if matches!(key, "copyright" | "license owner" | "rights holder") {
-            return &self.copyright;
-        }
-        if matches!(key, "software" | "tool" | "encoder" | "source") {
-            return &self.software;
-        }
-        if matches!(key, "creation time" | "date:create" | "date:modify" | "timestamp" | "date") {
-            return &self.timestamps;
-        }
-        if matches!(key, "comment" | "description" | "usercomment" | "user comment") {
-            return &self.comments;
-        }
-        &self.other_text
     }
+
 }
 
 #[cfg(test)]
@@ -248,6 +304,19 @@ mod tests {
         assert_eq!(c.creator, Setting::Replace("tomiya; # \"T\" = true".into()));
         assert_eq!(c.comments, Setting::Replace("false".into()));
         assert_eq!(Config::parse("[keep]\ncreator = \"\"\n").unwrap().creator, Setting::Replace(String::new()));
+    }
+
+    #[test]
+    fn expanded_png_keywords_are_classified() {
+        let c = Config::default();
+        assert_eq!(c.png_keyword(b"Source"), &Setting::Remove);
+        assert_eq!(c.png_keyword(b"GPS"), &Setting::Remove);
+        assert_eq!(c.png_keyword(b"Email"), &Setting::Remove);
+        assert_eq!(c.png_keyword(b"Title"), &Setting::Keep);
+        assert_eq!(c.png_keyword(b"Tags"), &Setting::Keep);
+        let r = Config::parse("[keep]\ntitle=\"New title\"\ncamera_model=\"New device\"\n").unwrap();
+        assert_eq!(r.title.replacement(), Some("New title"));
+        assert_eq!(r.camera_model.replacement(), Some("New device"));
     }
 
     #[test]
