@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::xmp;
 use crate::exif;
 use crate::formats::Cleaned;
 
@@ -24,6 +25,7 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
     let mut chunks: Vec<([u8; 4], Vec<u8>)> = Vec::new();
     let mut i = 12;
     let mut removed = 0;
+    let mut wrote_xmp = false;
     let mut seen_image = false;
     let mut seen_vp8x = false;
     while i < input.len() {
@@ -50,22 +52,32 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
             b"VP8 " | b"VP8L" | b"ANMF" => seen_image = true,
             _ => {}
         }
-        let keep = match &kind {
-            b"EXIF" => config.exif,
-            b"XMP " => config.xmp,
-            b"ICCP" => config.color_profile,
-            b"VP8X" | b"VP8 " | b"VP8L" | b"ANIM" | b"ANMF" | b"ALPH" => true,
-            _ => config.unknown,
-        };
-        if &kind == b"EXIF" && !config.exif {
+        if &kind == b"EXIF" && !config.exif.keep() {
             if let Some(minimal) = exif::reduce(data, config)? {
                 chunks.push((kind, minimal));
             }
             removed += 1;
-        } else if keep {
-            chunks.push((kind, data.to_vec()));
-        } else {
+        } else if &kind == b"XMP " && !config.xmp.keep() {
+            if !wrote_xmp {
+                if let Some(xml) = xmp::replacement(config) {
+                    chunks.push((kind, xml));
+                }
+                wrote_xmp = true;
+            }
             removed += 1;
+        } else {
+            let keep = match &kind {
+                b"EXIF" => config.exif.keep(),
+                b"XMP " => config.xmp.keep(),
+                b"ICCP" => config.color_profile.keep(),
+                b"VP8X" | b"VP8 " | b"VP8L" | b"ANIM" | b"ANMF" | b"ALPH" => true,
+                _ => config.unknown.keep(),
+            };
+            if keep {
+                chunks.push((kind, data.to_vec()));
+            } else {
+                removed += 1;
+            }
         }
         i = padded;
     }
@@ -136,6 +148,17 @@ mod tests {
         assert!(clean.bytes.windows(14).any(|w| w == b"encoded pixels"));
         assert!(!clean.bytes.windows(16).any(|w| w == b"creation history"));
         verify(&clean.bytes, Format::Webp, &Config::default()).unwrap();
+    }
+
+    #[test]
+    fn replaces_xmp_creator_and_keeps_image_bytes() {
+        let c = Config::parse("[keep]\ncreator=\"tomiya\"\n").unwrap();
+        let clean = clean(&webp_fixture(), &c).unwrap();
+        assert!(clean.bytes.windows(6).any(|s| s == b"tomiya"));
+        assert!(!clean.bytes.windows(16).any(|s| s == b"creation history"));
+        assert!(clean.bytes.windows(14).any(|s| s == b"encoded pixels"));
+        assert_eq!(clean.bytes[20], 0x24); // ICC and XMP retained, EXIF removed
+        verify(&clean.bytes, Format::Webp, &c).unwrap();
     }
 
     #[test]
