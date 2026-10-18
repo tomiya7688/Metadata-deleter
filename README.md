@@ -16,6 +16,8 @@ cargo build --release
 
 ビルド後の実行ファイルはWindowsでは `target/release/metaclean.exe`、Linux/macOSでは `target/release/metaclean` です。
 
+GitHub Actionsの [`Rust CI`](https://github.com/tomiya7688/Metadata-deleter/actions/workflows/ci.yml) が成功すると、実行履歴の **Artifacts** から `metaclean-Windows` と `metaclean-Linux` の単独実行ファイルを取得できます（アーカイブを展開して利用してください）。
+
 ## 4つの操作
 
 ```powershell
