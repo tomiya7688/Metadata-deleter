@@ -61,6 +61,10 @@ fn keep_known(kind: &[u8; 4], config: &Config) -> Option<bool> {
         b"iCCP" | b"sRGB" | b"cHRM" | b"gAMA" | b"cICP" => Some(config.color_profile.keep()),
         b"pHYs" => Some(config.resolution.keep()),
         b"tIME" => Some(config.timestamps.keep()),
+        // C2PA/JUMBF provenance is stored in caBX, not in a PNG text chunk.
+        b"caBX" => Some(config.provenance.keep()),
+        // Public/commonly used non-rendering extension chunks, separate from unknown.
+        b"oFFs" | b"pCAL" | b"sCAL" | b"vpAg" => Some(config.png_extension.keep()),
         // APNG, transparency, palette, and rendering-related chunks are preserved.
         b"IHDR" | b"PLTE" | b"IDAT" | b"IEND" | b"tRNS" | b"bKGD" | b"sBIT"
         | b"hIST" | b"sPLT" | b"sTER" | b"acTL" | b"fcTL" | b"fdAT" => Some(true),
@@ -249,6 +253,40 @@ mod tests {
         assert!(!cleaned.bytes.windows(11).any(|s| s == b"OLD_ACCOUNT"));
         assert!(cleaned.bytes.windows(6).any(|s| s == b"tomiya"));
         verify(&cleaned.bytes, Format::Png, &c).unwrap();
+    }
+
+    #[test]
+    fn common_text_categories_and_png_extensions_obey_ini() {
+        let mut p = SIGNATURE.to_vec();
+        add_chunk(&mut p, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]).unwrap();
+        add_chunk(&mut p, b"tEXt", b"Source\0Old device").unwrap();
+        add_chunk(&mut p, b"tEXt", b"Title\0Original title").unwrap();
+        add_chunk(&mut p, b"tEXt", b"Email\0private@example.com").unwrap();
+        add_chunk(&mut p, b"tEXt", b"GPS\0secret coordinate").unwrap();
+        add_chunk(&mut p, b"oFFs", b"position").unwrap();
+        add_chunk(&mut p, b"IDAT", b"pixels").unwrap();
+        add_chunk(&mut p, b"IEND", b"").unwrap();
+        let cfg = Config::parse("[keep]\ntitle=\"New title\"\npng_extension=false\n").unwrap();
+        let clean = clean(&p, &cfg).unwrap();
+        for secret in ["Old device", "private@example.com", "secret coordinate", "Original title", "position"] {
+            assert!(!String::from_utf8_lossy(&clean.bytes).contains(secret), "{secret}");
+        }
+        assert!(clean.bytes.windows(9).any(|w| w == b"New title"));
+        assert!(clean.bytes.windows(6).any(|w| w == b"pixels"));
+        verify(&clean.bytes, Format::Png, &cfg).unwrap();
+    }
+
+    #[test]
+    fn c2pa_provenance_not_treated_as_unknown() {
+        let mut p = SIGNATURE.to_vec();
+        add_chunk(&mut p, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]).unwrap();
+        add_chunk(&mut p, b"caBX", b"signed old identity").unwrap();
+        add_chunk(&mut p, b"IDAT", b"pixels").unwrap();
+        add_chunk(&mut p, b"IEND", b"").unwrap();
+        let cleaned = clean(&p, &Config::default()).unwrap();
+        assert!(!cleaned.bytes.windows(19).any(|x| x == b"signed old identity"));
+        let c = Config::parse("[keep]\nprovenance=true\n").unwrap();
+        assert!(clean(&p, &c).unwrap().bytes.windows(19).any(|x| x == b"signed old identity"));
     }
 
     #[test]

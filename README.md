@@ -1,125 +1,122 @@
 # Metadata deleter (`metaclean`)
 
-PNG・JPEG・WebP画像の**出自に関するメタデータ**をローカルで削除・書き換えする、Rust製の小さなCLIツールです。
-画像データは**再エンコードしません**。Pythonやネット接続、外部プログラムも不要です。
+PNG / JPEG / WebP の作成者・位置情報・使用機器・制作履歴などを、**ローカル**で削除・選択的に置換するRust製CLIです。画像の圧縮データは再エンコードしません。
 
-> **範囲について**：すべての個人情報が消えることを保証するツールではありません。画像に写り込んだ情報、未知の独自チャンク、保持を選んだICCプロファイル等、ファイルシステムの属性には情報が残る場合があります。公開前に必要に応じてご確認ください。
+**重要**：すべての個人情報の消去を保証するものではありません。画像そのものに写っている情報、未知の独自形式、残したコンテナ内の情報、ファイルシステムのタイムスタンプやACLなどは別です。初めは `--copy` で確認してください。
 
-## ビルド
+## 配布とビルド
 
-Rustのツールチェーンが必要です（利用時は不要）。
+GitHub Actionsの [Rust CI](https://github.com/tomiya7688/Metadata-deleter/actions/workflows/ci.yml) の成功した実行の **Artifacts** から、Windows / Linux の実行ファイルと `metaclean.ini` が入ったパッケージを入手できます。WindowsではRustやPythonをインストールせずに使えます。
+
+ソースからビルドする場合：
 
 ```sh
-cargo test
+cargo test --all-targets
 cargo build --release
 ```
 
-ビルド後の実行ファイルはWindowsでは `target/release/metaclean.exe`、Linux/macOSでは `target/release/metaclean` です。
+依存クレートはありません。アプリケーションのRustコードは `#![forbid(unsafe_code)]` を使用しており、`unsafe` ブロックや独自のWin32 FFIを使用しません。
 
-## 4つの操作
+## INIの読み込み先（重要）
 
-```powershell
-# ファイルを安全に上書き
-metaclean photo.jpg --in-place
+`--config` を指定しない場合、**`metaclean` 実行ファイルのあるディレクトリの `metaclean.ini`** を読み込みます。処理を開始したカレントディレクトリや画像フォルダからは自動検索しません。
 
-# photo_clean.jpg を新規作成（同名が存在したら停止）
-metaclean photo.jpg --copy
-
-# フォルダ以下の対応画像を再帰的に上書き
-metaclean ./photos --in-place
-
-# photos_clean/ を新規作成しフォルダ構成を維持
-metaclean ./photos --copy
+```text
+C:\Tools\MetaClean\
+  metaclean.exe
+  metaclean.ini
 ```
 
-フォルダコピーでは未対応ファイルも**変更せずコピー**します。上書き処理では未対応形式をスキップします。シンボリックリンクと特殊ファイルはたどらず、コピーもしません。フォルダで一部ファイルが失敗した場合、残りのファイルも処理し、終了コードを `1` にします。途中まで処理されたファイルやコピー先フォルダは自動で巻き戻しません。
+- 実行ファイルと同じフォルダにINIがあれば、それを読む（読み込み・構文エラーなら処理中止）。
+- INIがなければ、実行ファイルに埋め込まれたデフォルト設定を使う。
+- `--config C:\path\custom.ini` を指定すれば、こちらが最優先（相対パスはカレントディレクトリ基準）。
+- `metaclean --print-default-config` でデフォルト設定を表示できる。
 
-## 設定 (INI)
+## 基本操作
 
-`metaclean.ini` をカレントディレクトリに置くと自動読み込みします。設定がなければ以下と同じ安全側の初期値を使います。別の場所から読み込む場合は `--config path/to/config.ini` を付けます。`metaclean --print-default-config` でも初期値を確認できます。
+```powershell
+metaclean photo.jpg --in-place  # 安全な一時ファイルを使って上書き
+metaclean photo.jpg --copy      # photo_clean.jpg を新規作成
+metaclean ./photos --in-place  # サブフォルダを含めて上書き
+metaclean ./photos --copy      # photos_clean/ にフォルダ構成を維持してコピー
+```
 
-**INIの設定値は3種類**です。値の型は真偽値だけではありません。
+コピー先がすでに存在すれば上書きしません。フォルダコピーでは未対応拡張子もそのままコピーし、シンボリックリンクはたどりません。一部ファイルの処理に失敗した場合はエラーを返しますが、すでに処理できた別のファイルを巻き戻しません。
 
-- `true`（クォーテーションなし）：元の値を保持
-- `false`（クォーテーションなし）：元の値を削除
-- `"任意の文字列"`（必ず**ダブルクォーテーション**で囲む）：指定した文字列に置換
-
-たとえば、過去のGoogleアカウント名などを新しい表示名へ変更したい場合は、`creator = "tomiya"` と指定します。
+## 設定と置換
 
 ```ini
 [keep]
 creator = "tomiya"
-comments = false
-```
-
-`creator = tomiya` や `creator = 'tomiya'` はエラーになります。`creator = "false"` は文字列 `false` への置換で、削除を意味しません。値に `;`、`#`、`=` を含める場合はダブルクォーテーションで囲みます。文字列内の `"` と `\` はそれぞれ `\"` と `\\` でエスケープできます。置換は対象となるメタデータ領域が存在する場合に行い、作成者情報が全くない画像へ無条件に作成者を追加するわけではありません。
-
-**文字列置換に対応する設定**：`creator`、`copyright`、`software`、`comments`、`ai_generation`、`other_text`。それ以外（EXIF/XMP/IPTCコンテナ、位置付け用データ、色、向き、解像度、日時、未知のバイナリ領域）は `true` / `false` のみ有効です。対応外の項目に引用符付きの値を指定するとエラーで停止します。
-
-**置換時の安全策**：`exif=true`、`xmp=true`、`iptc=true` と文字列置換は併用できません。元のコンテナを丸ごと保持すると旧名が別のタグに残るおそれがあるため、設定エラーにします。通常は3項目ともデフォルトの `false` を使用してください。
-
-```ini
-[keep]
-exif = false
-xmp = false
-iptc = false
-comments = false
-creator = false
-copyright = false
+contact = false
+gps = false
+camera_make = false
+camera_model = false
+device_serial = false
 software = false
-timestamps = false
-ai_generation = false
-provenance = false
 color_profile = true
 orientation = true
 resolution = true
-other_text = true
-unknown = true
 ```
 
-| 設定 | 対象（概要） | デフォルト |
-|---|---|---|
-| `exif` | EXIFコンテナ全体。`false` 時は表示用の回転・解像度と、保持／置換を許可した一部のテキストフィールドを再構成 | `false` |
-| `xmp` | XMPコンテナ（独自XMP拡張も含む） | `false` |
-| `iptc` | JPEG Photoshop APP13領域（IPTC等を含む） | `false` |
-| `comments` | JPEG COM、PNGのComment/Description、XMPの説明（置換時） | `false` |
-| `creator` | PNGのAuthor/Artist/Creator、EXIF Artist/XPAuthor/CameraOwnerName、XMP dc:creator（置換時） | `false` |
-| `copyright` | PNGのCopyright等、EXIF Copyright、XMP dc:rights（置換時） | `false` |
-| `software` | PNGのSoftware等、EXIF Software、XMP CreatorTool（置換時） | `false` |
-| `timestamps` | PNGのCreation Time等、`tIME` | `false` |
-| `ai_generation` | PNGのparameters/Prompt/Workflow/Seed等 | `false` |
-| `provenance` | JPEG APP11 JUMBF/C2PA識別領域 | `false` |
-| `color_profile` | ICC等の色表示用情報 | `true` |
-| `orientation` | EXIFの回転方向（EXIFを除去するときだけ適用） | `true` |
-| `resolution` | EXIFの解像度、PNG pHYs、JPEG JFIF密度 | `true` |
-| `other_text` | PNGで分類できないテキストキーワード | `true` |
-| `unknown` | 未分類の付加チャンクやJPEG APP領域 | `true` |
+- `true`：その分類に該当する既存の項目を保持。
+- `false`：該当項目を削除。
+- `"任意の文字列"`：**置換対応のテキスト項目**に限り指定値に書き換える。引用符内の `true` / `false` も文字列扱い。
+- 引用符のない `tomiya`、シングルクォーテーション、文字列に非対応の項目への置換はエラー。
 
-**コンテナごとの制約**：EXIF・XMP・IPTCを `true` にすると、そのコンテナ内のGPSや作成者情報等も保持されます。`exif=false` ではEXIFの表示用タグおよび許可されたIFDテキストタグだけを再構成します。JPEGの写真編集情報やXMPの著作権情報など、**個人情報以外が同じコンテナにあると一緒に削除される**場合があります。設定はコンテナ単位とPNGキーワード単位の組み合わせです。
+置換は**既存の対象項目**に対して行い、元画像にメタデータがなければ新規には挿入しません。EXIFの文字列はフォーマット上の制約があり、UnicodeはXPAuthor・XPTitle等のUTF-16項目へ移す場合があります。文字列値の一部はEXIF ASCIIフィールドで置換不能なため、エラーになります。PNGでは置換対象の元チャンクを非圧縮iTXtに再構成します。
 
-未知の付加情報はデフォルトで保持するため、既知でないメタデータが残る可能性があります。未知の非必須チャンクを除去する場合は `unknown = false` にできますが、独自形式で使用される付加情報まで失われることがあり、画像表示に影響するリスクがあります。表示の維持と未知情報の消去の完全な両立は保証できません。
+`exif=true` / `xmp=true` / `iptc=true` は**コンテナ丸ごとの保持**です。その内部に削除予定の個人情報があっても残ります。誤解を防ぐため、これらと文字列置換の同時指定はエラーになります。
 
-## 対応形式と処理方式
+### 全設定項目
 
-- **PNG**：テキストの削除・置換（置換後は非圧縮UTF-8のiTXt）、日時・eXIf等を処理。CRCを検証・更新。IDAT、パレット、透明度、APNGフレームを保持。
-- **JPEG**：Exif/XMP/Photoshop APP13/COM等を処理。EXIFのOrientation・解像度・許可された作成者等を小さなEXIF領域として再構成。XMPは指定されたテキストだけで最小限の文書を再作成。SOS以降のエントロピー符号化データはそのまま保持。EOI以降の余剰データは出力しません。
-- **WebP**：RIFF EXIF/XMPチャンクを削除・置換し、VP8XのEXIF/XMP/ICCフラグとRIFFサイズを更新。VP8/VP8L・アニメーション画像データを保持。
+| キー | 初期値 | 処理の概要 | `"文字列"` |
+|---|---|---|---|
+| `exif` | `false` | EXIF全体（false時は許可項目を安全に再構成） | × |
+| `xmp` | `false` | XMP/XML全体（false時は指定した置換値のみ再構成） | × |
+| `iptc` | `false` | JPEG APP13 Photoshop/IPTCコンテナ | × |
+| `creator` | `false` | 作成者、EXIF Artist/XPAuthor/CameraOwnerName、PNG Author | ○ |
+| `copyright` | `false` | 権利者名、著作権表示 | ○ |
+| `software` | `false` | 編集アプリ・生成ツール | ○ |
+| `comments` | `false` | JPEG COM、EXIF/PNGのコメント | ○ |
+| `timestamps` | `false` | 撮影・制作日時、EXIFタイムゾーン・PNG tIME等 | × |
+| `ai_generation` | `false` | PNGの生成プロンプト／シード／ワークフロー等 | ○ (PNG) |
+| `provenance` | `false` | C2PA/JUMBF: PNG caBX、WebP C2PA、JPEG APP11 | × |
+| `title` | `true` | タイトル、XPTitle、XMP dc:title、PNG Title等 | ○ |
+| `description` | `true` | EXIF ImageDescription、PNG Description等 | ○ |
+| `keywords` | `true` | タグ、XPKeywords、PNG Keywords、XMP dc:subject | ○ |
+| `contact` | `false` | PNGのEmail・Website・Phoneなどの連絡先 | ○ (PNG) |
+| `gps` | `false` | EXIF GPS IFD、PNG GPS/Location/Latitude等 | × |
+| `camera_make` | `false` | EXIF Make、PNG Make | ○ |
+| `camera_model` | `false` | EXIF Model、PNG Source/Camera/Model | ○ |
+| `lens` | `false` | EXIF LensMake/LensModel、PNG Lens等 | ○ |
+| `device_serial` | `false` | EXIF BodySerialNumber/LensSerialNumber等 | ○ |
+| `camera_settings` | `false` | EXIF ISO、露出、焦点距離、PNGカメラ設定等 | × |
+| `image_id` | `false` | EXIF ImageUniqueID、PNG Document ID等 | ○ |
+| `rating` | `true` | EXIF Rating/RatingPercent、PNG Rating等 | × |
+| `jpeg_thumbnail` | `false` | JPEG APP0 JFXXプレビュー（EXIF埋め込みサムネイルは常に除去） | × |
+| `mpf` | `true` | JPEG APP2 MPFマルチ画像索引（下記注意） | × |
+| `flashpix` | `false` | JPEG APP2 FPXR | × |
+| `ducky` | `false` | JPEG APP12 Ducky | × |
+| `png_extension` | `true` | PNGのoFFs / sCAL / pCAL / vpAg等の拡張付加情報 | × |
+| `color_profile` | `true` | ICC、色空間、ガンマなど | × |
+| `orientation` | `true` | EXIF Orientation（回転表示） | × |
+| `resolution` | `true` | EXIF解像度、PNG pHYs、JPEG JFIF密度 | × |
+| `other_text` | `true` | まだ分類していないPNGテキスト | ○ (PNG) |
+| `unknown` | `true` | まだ認識していない付加チャンク・JPEG APPセグメント | × |
 
-画像の**ファイル構造**を検証しますが、画像デコーダを使ってピクセルを全展開し、完全にデコード可能かを保証するわけではありません。メタデータ削除後は同じ設定で再解析し、変更が再発しないことを検証します。
+`true` は**個人情報が存在しないという意味ではありません**。たとえばタイトルや未知のテキストに名前が書かれている可能性があります。公開用に厳格に処理したい場合は必要に応じて `title=false`、`description=false`、`keywords=false`、`other_text=false`、`unknown=false` などを選んでください（未知の付加情報は表示にも影響する可能性があります）。
 
-## 安全上の動作
+### コンテナ固有の制約
 
-- 上書き時は同じディレクトリの一時ファイルに全データを書き出し、検証後にファイルを置換します（Windowsでは `ReplaceFileW`、その他のOSではrename）。処理途中の書き込みで元画像を直接壊しません。
-- コピー先のファイルやフォルダが既に存在する場合は上書きしません。
-- PNG/JPEG/WebPとして認識できないファイル、構造が壊れたファイルは無理に編集しません。
-- ファイル名の拡張子で対象を判断します（`.png`, `.jpg`, `.jpeg`, `.webp`、大文字も対応）。
-- コピー先フォルダは作成済みかどうかを確認して新規作成します。1ファイル単位での安全性は確保しますが、フォルダ全体を1つのトランザクションとして扱いません。
-- 出力ファイルには元の通常のファイルパーミッションを可能な範囲で引き継ぎますが、すべての拡張属性・ACL・ファイルシステム上のタイムスタンプを保持／消去するものではありません。
+- **EXIF**：`exif=false` では既知のIFD0、Exif SubIFD、GPS IFDタグのみを書き出します。MakerNote、未知のEXIFタグ、Exif IFD1の埋め込みサムネイルなどは常に破棄されます。`unknown=true` にしても、これらが暗黙に残るわけではありません。GPS日時は `gps=true` でも `timestamps=false` なら残しません。
+- **XMP**：パーサーによる未知XML要素ごとの取捨選択ではなく、コンテナ全体の除去と、明示的に指定した一部の置換値の新規XMPへの再生成です。`title=true` 等にしても、元のXMPの該当要素だけを自動抽出して保持するわけではありません。
+- **IPTC**：JPEG APP13を一括保持・削除します。個々のIPTCタグの意味的な置換は行いません。
+- **MPF JPEG**：MPF内のマルチ画像参照オフセットは、ExifやAPPセグメントを削除すると壊れる可能性があります。`mpf=true` のままファイル内容が変わる場合は**安全のためエラーで停止**します。`mpf=false` にすると索引と、後続JPEG画像を失う可能性があります。
+- **C2PA**：C2PA署名はメタデータ書換えで無効になるため、通常は `provenance=false` を推奨します。
 
-**置換の範囲について**：元画像にメタデータ領域がなければ置換値は追加しません。EXIFはIFD0のArtist・XPAuthor・Software・Copyrightと一部のExif SubIFDを対象とし、すべてのメーカー独自タグに対応するわけではありません。XMPの元データは細かく編集せず、置換指定されたcreator / copyright / software / commentsのみの最小XMPに再構成します。IPTC Photoshop領域は削除し、置換が指定されていれば最小XMPを代わりに作成できます。EXIFでUnicodeの作成者名はXPAuthorで保存しますが、ASCII限定のSoftware/CopyrightフィールドにはASCIIの名前のみ指定できます。AI生成情報等の任意文字列置換はPNGテキスト領域のみ対応します。これらは元のメタデータすべての完全な意味的編集を保証するものではありません。
+### 安全性
 
-既知のコンテナ以外に埋め込まれたプライバシー情報、サムネイルなどに画像として写り込んだ情報、カラープロファイル内部の記述文字列、クラウドサービスやOSが保持する作成記録は対象外です。
+処理後に構造を再解析し、同じ設定でもう一度処理したとき同一バイト列になることを検証します。PNGではCRCを検証し、書き換えたチャンクのCRCを再計算します。JPEGの圧縮ストリーム、PNGのIDAT、WebPのVP8/VP8Lフレームには触れません。
 
-## 開発
-
-依存クレートは使っていません。構成は `src/config.rs`（INI）、`src/ops.rs`（CLIのファイル操作）、`src/formats/`（PNG/JPEG/WebP）、`src/exif.rs`（EXIFフィールドの最小再構成）、`src/xmp.rs`（最小XMP生成）です。CIではUbuntu/Windowsで `cargo test --all-targets` とリリースビルドを実行します。
+上書き時は同じディレクトリの一時ファイルから`std::fs::rename`で置換し、元画像への部分書き込みを防ぎます。コピーは一時ファイルへの書込み後、ハードリンクによる新規公開を試み、既存パスを上書きしません。ハードリンク非対応ファイルシステムではエラーになる場合があります。OSの拡張属性や作成日時が維持されることは保証しません。

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod config;
 mod exif;
 mod formats;
@@ -22,7 +24,8 @@ Usage:
 --config <file.ini>     Use a custom INI file.
 --print-default-config  Print the default INI to stdout.
 
-With no --config, reads ./metaclean.ini when present; otherwise uses built-in defaults.
+With no --config, reads metaclean.ini BESIDE the executable (not the working directory).
+When absent, uses built-in defaults. An explicit --config path takes priority.
 "#;
 
 struct Args {
@@ -78,17 +81,30 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Option<Args>, 
     }))
 }
 
+/// Search beside the executable, never beside the process working directory.
+/// The explicit --config option takes precedence (relative paths are CWD-relative).
+fn load_config(executable: &Path, explicit: Option<&Path>) -> Result<Config, String> {
+    if let Some(path) = explicit {
+        return Config::load(path);
+    }
+    let ini = executable.parent().ok_or("cannot determine executable directory")?.join("metaclean.ini");
+    if ini.is_file() {
+        Config::load(&ini)
+    } else if ini.exists() {
+        Err(format!("configuration path is not a regular file: {}", ini.display()))
+    } else {
+        Ok(Config::default())
+    }
+}
+
 fn execute() -> Result<ExitCode, String> {
     let Some(args) = parse_args(std::env::args_os().skip(1))? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let config = if let Some(path) = args.config.as_deref() {
-        Config::load(path)?
-    } else if Path::new("metaclean.ini").exists() {
-        Config::load(Path::new("metaclean.ini"))?
-    } else {
-        Config::default()
-    };
+    let config = load_config(
+        &std::env::current_exe().map_err(|e| format!("cannot locate executable: {e}"))?,
+        args.config.as_deref(),
+    )?;
     let (report, output) = ops::run(&args.source, args.mode, &config)?;
     if let Some(path) = output {
         println!("Output: {}", path.display());
@@ -126,5 +142,26 @@ mod tests {
         assert!(parse_args(["file.png".into()]).is_err());
         assert!(parse_args(["file.png".into(), "--copy".into(), "--in-place".into()]).is_err());
         assert!(parse_args(["file.png".into(), "--copy".into()]).unwrap().is_some());
+    }
+
+    #[test]
+    fn ini_is_loaded_from_executable_directory_not_cwd() {
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let folder = std::env::temp_dir().join(format!(
+            "metaclean-config-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("metaclean.ini"), "[keep]\ncreator=\"FromExe\"\n").unwrap();
+        let exe = folder.join("metaclean.exe");
+        let config = load_config(&exe, None).unwrap();
+        assert_eq!(config.creator.replacement(), Some("FromExe"));
+        let override_ini = folder.join("other.ini");
+        fs::write(&override_ini, "[keep]\ncreator=\"Explicit\"\n").unwrap();
+        assert_eq!(load_config(&exe, Some(&override_ini)).unwrap().creator.replacement(), Some("Explicit"));
+        fs::remove_file(folder.join("metaclean.ini")).unwrap();
+        assert_eq!(load_config(&exe, None).unwrap(), Config::default());
+        fs::remove_dir_all(folder).unwrap();
     }
 }

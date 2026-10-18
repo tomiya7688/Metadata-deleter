@@ -70,6 +70,7 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
                 b"EXIF" => config.exif.keep(),
                 b"XMP " => config.xmp.keep(),
                 b"ICCP" => config.color_profile.keep(),
+                b"C2PA" => config.provenance.keep(),
                 b"VP8X" | b"VP8 " | b"VP8L" | b"ANIM" | b"ANMF" | b"ALPH" => true,
                 _ => config.unknown.keep(),
             };
@@ -159,6 +160,20 @@ mod tests {
         assert!(clean.bytes.windows(14).any(|s| s == b"encoded pixels"));
         assert_eq!(clean.bytes[20], 0x24); // ICC and XMP retained, EXIF removed
         verify(&clean.bytes, Format::Webp, &c).unwrap();
+    }
+
+    #[test]
+    fn c2pa_riff_chunk_is_classified() {
+        let mut p = webp_fixture();
+        let mut extra = Vec::new();
+        push_chunk(&mut extra, b"C2PA", b"signature and author").unwrap();
+        p.extend_from_slice(&extra);
+        let declared = (p.len() - 8) as u32;
+        p[4..8].copy_from_slice(&declared.to_le_bytes());
+        let default = clean(&p, &Config::default()).unwrap();
+        assert!(!default.bytes.windows(20).any(|w| w == b"signature and author"));
+        let keep = Config::parse("[keep]\nprovenance=true\n").unwrap();
+        assert!(clean(&p, &keep).unwrap().bytes.windows(20).any(|w| w == b"signature and author"));
     }
 
     #[test]

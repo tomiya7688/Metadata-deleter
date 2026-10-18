@@ -46,6 +46,7 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
     let mut saw_eoi = false;
     let mut removed = 0;
     let mut wrote_xmp = false;
+    let mut saw_mpf = false;
 
     while i < input.len() {
         if in_scan {
@@ -91,6 +92,9 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
         let is_xmp = marker == 0xe1 && (payload.starts_with(b"http://ns.adobe.com/xap/1.0/\0")
             || payload.starts_with(b"http://ns.adobe.com/xmp/extension/\0"));
         let is_iptc = marker == 0xed && payload.starts_with(b"Photoshop 3.0\0");
+        if marker == 0xe2 && payload.starts_with(b"MPF\0") {
+            saw_mpf = true;
+        }
         if is_exif && !config.exif.keep() {
             if let Some(minimal) = exif::reduce(payload, config)? {
                 write_segment(&mut out, marker, &minimal)?;
@@ -130,6 +134,11 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
         } else {
             let keep = match marker {
                 0xe0 if payload.starts_with(b"JFIF\0") => config.resolution.keep(),
+                0xe0 if payload.starts_with(b"JFXX\0") => config.jpeg_thumbnail.keep(),
+                // APP2 MPF is used for multi-picture JPEG: preserve by default.
+                0xe2 if payload.starts_with(b"MPF\0") => config.mpf.keep(),
+                0xe2 if payload.starts_with(b"FPXR") => config.flashpix.keep(),
+                0xec if payload.starts_with(b"Ducky") => config.ducky.keep(),
                 0xe1 if is_exif => config.exif.keep(),
                 0xe1 if is_xmp => config.xmp.keep(),
                 0xe2 if payload.starts_with(b"ICC_PROFILE\0") => config.color_profile.keep(),
@@ -153,6 +162,13 @@ pub fn clean(input: &[u8], config: &Config) -> Result<Cleaned, String> {
     }
     if !saw_scan || !saw_eoi {
         return Err("JPEG missing scan or EOI marker".into());
+    }
+    // MPF multi-picture JPEGs can contain offsets into later JPEG images.
+    // Removing APP segments or rewriting EXIF can invalidate those offsets.
+    // Until MPEntry offsets can be adjusted correctly, refuse the operation
+    // rather than silently corrupting multi-picture data.
+    if saw_mpf && config.mpf.keep() && out != input {
+        return Err("cannot safely rewrite an MPF multi-picture JPEG without repairing image offsets; use --copy with mpf=false only if losing multi-picture content is acceptable".into());
     }
     Ok(Cleaned {
         bytes: out,
@@ -234,6 +250,27 @@ mod tests {
         assert!(cleaned.bytes.windows(6).any(|s| s == b"tomiya"));
         assert!(!cleaned.bytes.windows(11).any(|s| s == b"Old Account"));
         verify(&cleaned.bytes, Format::Jpeg, &c).unwrap();
+    }
+
+    #[test]
+    fn known_app_markers_are_not_treated_as_unknown() {
+        let mut jpeg = vec![0xff, 0xd8];
+        write_segment(&mut jpeg, 0xe0, b"JFXX\0preview").unwrap();
+        write_segment(&mut jpeg, 0xe2, b"MPF\0multi-image info").unwrap();
+        write_segment(&mut jpeg, 0xe2, b"FPXR\0flashpix").unwrap();
+        write_segment(&mut jpeg, 0xec, b"Ducky photo history").unwrap();
+        write_segment(&mut jpeg, 0xda, &[1, 1, 0, 0, 63, 0]).unwrap();
+        jpeg.extend_from_slice(&[1, 2, 3, 0xff, 0xd9]);
+        assert!(clean(&jpeg, &Config::default()).is_err()); // avoid stale MPF offsets
+        let clean_mpf = Config::parse("[keep]\njpeg_thumbnail=true\nmpf=true\nflashpix=true\nducky=true\n").unwrap();
+        assert_eq!(clean(&jpeg, &clean_mpf).unwrap().bytes, jpeg);
+        let c = Config::parse("[keep]\njpeg_thumbnail=true\nmpf=false\nflashpix=true\nducky=true\n").unwrap();
+        let other = clean(&jpeg, &c).unwrap();
+        assert!(other.bytes.windows(7).any(|x| x == b"preview"));
+        assert!(!other.bytes.windows(16).any(|x| x == b"multi-image info"));
+        assert!(other.bytes.windows(8).any(|x| x == b"flashpix"));
+        assert!(other.bytes.windows(5).any(|x| x == b"Ducky"));
+        verify(&other.bytes, Format::Jpeg, &c).unwrap();
     }
 
     #[test]

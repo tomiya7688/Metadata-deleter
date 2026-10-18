@@ -58,69 +58,16 @@ fn new_temp_near(dest: &Path, content: &[u8], permissions: Permissions) -> Resul
     Err("unable to allocate a unique temporary filename".into())
 }
 
-#[cfg(windows)]
-fn wide_path(path: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
-}
-
-#[cfg(windows)]
-#[link(name = "Kernel32")]
-extern "system" {
-    fn ReplaceFileW(
-        replaced: *const u16,
-        replacement: *const u16,
-        backup: *const u16,
-        flags: u32,
-        exclude: *mut std::ffi::c_void,
-        reserved: *mut std::ffi::c_void,
-    ) -> i32;
-    fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
-}
-
+// The Rust standard library provides the replacement semantics on Windows and Unix.
+// The temporary file lives beside the destination, so cross-volume moves are avoided.
 fn replace_existing(temp: &Path, dest: &Path) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        let to = wide_path(dest);
-        let from = wide_path(temp);
-        // ReplaceFileW performs a same-volume replacement, avoiding a delete/rename gap.
-        if unsafe {
-            ReplaceFileW(
-                to.as_ptr(),
-                from.as_ptr(),
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        fs::rename(temp, dest)
-    }
+    fs::rename(temp, dest)
 }
 
+// Hard links are atomic and refuse to overwrite an existing output name.
+// On filesystems without hard-link support, fail instead of publishing a partial copy.
 fn publish_new(temp: &Path, dest: &Path) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        let from = wide_path(temp);
-        let to = wide_path(dest);
-        // MoveFileW fails if `dest` already exists, unlike rename on Unix.
-        if unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        // Atomic no-overwrite creation on the same filesystem.
-        fs::hard_link(temp, dest)
-    }
+    fs::hard_link(temp, dest)
 }
 
 fn durable_directory(path: &Path) {
