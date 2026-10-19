@@ -1,35 +1,45 @@
-name: Rust CI
+name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  rust:
+    name: Build and unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Test
-        run: cargo test --all-targets
-      - name: Build release
+      - name: Unit tests
+        run: cargo test --bin metaclean --verbose
+      - name: Clippy
+        run: cargo clippy --all-targets --no-deps
+      - name: Release build
         run: cargo build --release
-      - name: Package (Linux)
+      - name: Package binary with adjacent INI (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           mkdir -p dist
           cp target/release/metaclean metaclean.ini dist/
-      - name: Package (Windows)
+      - name: Package binary with adjacent INI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist
+          New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/metaclean.exe dist/
           Copy-Item metaclean.ini dist/
-      - name: Upload binaries and adjacent config
+      - name: Upload standalone package
         uses: actions/upload-artifact@v4
         with:
           name: metaclean-${{ runner.os }}
