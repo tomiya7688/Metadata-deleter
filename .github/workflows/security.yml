@@ -1,0 +1,27 @@
+name: Security CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  malformed-inputs:
+    name: Malformed files and filesystem safety (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce Safe Rust and run security regressions
+        # Cargo.toml denies unsafe_code, and main.rs has #![forbid(unsafe_code)].
+        run: cargo test --test security --release -- --nocapture
