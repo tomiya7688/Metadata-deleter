@@ -37,6 +37,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Option<Args>, 
     let mut mode = None;
     let mut config = None;
     let mut shell = false;
+    let mut pending_paths = String::new();
     let mut iter = args.into_iter().peekable();
     if let Some(arg) = iter.peek() {
         if arg == "shell" || arg == "--shell" {
@@ -62,11 +63,22 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Option<Args>, 
                 config = Some(PathBuf::from(iter.next().ok_or("--config requires a path")?));
             }
             Some(s) if s.starts_with('-') => return Err(format!("unknown option: {s}")),
-            Some(s) if !shell => sources.extend(parse_paths(s)?),
-            None if !shell => sources.push(PathBuf::from(arg)),
+            Some(s) if !shell => {
+                if !pending_paths.is_empty() { pending_paths.push(' '); }
+                pending_paths.push_str(s);
+                let ends_in_comma = pending_paths.trim_end().chars().last()
+                    .is_some_and(|c| matches!(c, ',' | '、' | '，'));
+                if !ends_in_comma {
+                    sources.extend(parse_paths(&pending_paths)?);
+                    pending_paths.clear();
+                }
+            }
+            None if !shell && pending_paths.is_empty() => sources.push(PathBuf::from(arg)),
+            None if !shell => return Err("cannot combine non-Unicode paths with a comma-separated list".into()),
             _ => return Err("interactive shell accepts only --config".into()),
         }
     }
+    if !pending_paths.is_empty() { sources.extend(parse_paths(&pending_paths)?); }
     if !shell && sources.is_empty() { return Err("missing input path".into()); }
     if !shell && mode.is_none() { return Err("specify --in-place or --copy".into()); }
     Ok(Some(Args { sources, mode, config, shell }))
@@ -106,6 +118,8 @@ mod tests {
         assert_eq!(args.mode, Some(Mode::Copy));
         assert!(parse_args(["a.png".into()]).is_err());
         assert!(parse_args(["a.png".into(), "--copy".into(), "--in-place".into()]).is_err());
+        let spaced = parse_args(["日本語.png,".into(), "次.webp".into(), "--copy".into()]).unwrap().unwrap();
+        assert_eq!(spaced.sources, [PathBuf::from("日本語.png"), PathBuf::from("次.webp")]);
         assert!(parse_args(["shell".into()]).unwrap().unwrap().shell);
         assert!(parse_args(Vec::<OsString>::new()).unwrap().unwrap().shell);
     }
