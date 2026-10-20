@@ -48,7 +48,7 @@ pub fn parse_paths(text: &str) -> Result<Vec<PathBuf>, String> {
 /// file+parent-folder requests from processing the same file twice.
 fn validate_targets(paths: &[PathBuf], mode: Mode) -> Result<(), String> {
     if paths.is_empty() { return Err("no input paths".into()); }
-    let mut canonical = Vec::with_capacity(paths.len());
+    let mut canonical: Vec<(PathBuf, bool)> = Vec::with_capacity(paths.len());
     for path in paths {
         let metadata = std::fs::symlink_metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
