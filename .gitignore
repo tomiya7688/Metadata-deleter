@@ -1,2 +1,4 @@
 /target/
 *.tmp
+/gui/target/
+/gui/Cargo.lock

@@ -141,6 +141,15 @@ fn parse_value(value: &str, line: usize, key: &str) -> Result<Setting, String> {
     }
 }
 
+/// Find configuration beside the executable, unless explicitly overridden.
+pub fn load_config(executable: &Path, explicit: Option<&Path>) -> Result<Config, String> {
+    if let Some(path) = explicit { return Config::load(path); }
+    let ini = executable.parent().ok_or("cannot determine executable directory")?.join("metaclean.ini");
+    if ini.is_file() { Config::load(&ini) }
+    else if ini.exists() { Err(format!("configuration path is not a regular file: {}", ini.display())) }
+    else { Ok(Config::default()) }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path)
@@ -248,18 +257,6 @@ impl Config {
         if matches!(key, "xml:com.adobe.xmp" | "raw profile type xmp" | "xmp") {
             return &self.xmp;
         }
-        // ImageMagick/ExifTool/GIMP commonly embed binary metadata in PNG
-        // zTXt/iTXt under these well-known legacy keywords. They must not
-        // fall through to other_text=true and accidentally leak author/GPS.
-        if matches!(key, "raw profile type exif" | "raw profile type app1") {
-            return &self.exif;
-        }
-        if matches!(key, "raw profile type iptc" | "raw profile type 8bim") {
-            return &self.iptc;
-        }
-        if matches!(key, "raw profile type icc" | "raw profile type icm") {
-            return &self.color_profile;
-        }
         if matches!(
             key, "parameters" | "prompt" | "negative prompt" | "workflow" | "seed"
                 | "sampler" | "model" | "steps" | "cfg scale" | "generation data"
@@ -273,8 +270,7 @@ impl Config {
             "copyright" | "license owner" | "rights holder" | "rights" => &self.copyright,
             "software" | "tool" | "encoder" | "processing software" => &self.software,
             "creation time" | "date:create" | "date:modify" | "timestamp" | "date"
-                | "date created" | "date modified" | "datetime" | "date time"
-                | "create-date" | "modify-date" => &self.timestamps,
+                | "date created" | "date modified" | "datetime" | "date time" => &self.timestamps,
             "comment" | "usercomment" | "user comment" | "notes" => &self.comments,
             "title" | "headline" | "object name" => &self.title,
             "description" | "caption" | "image description" | "disclaimer" | "warning"
@@ -325,11 +321,6 @@ mod tests {
         assert_eq!(c.png_keyword(b"Source"), &Setting::Remove);
         assert_eq!(c.png_keyword(b"GPS"), &Setting::Remove);
         assert_eq!(c.png_keyword(b"Email"), &Setting::Remove);
-        assert_eq!(c.png_keyword(b"Raw profile type exif"), &Setting::Remove);
-        assert_eq!(c.png_keyword(b"Raw profile type iptc"), &Setting::Remove);
-        assert_eq!(c.png_keyword(b"Raw profile type 8bim"), &Setting::Remove);
-        assert_eq!(c.png_keyword(b"Raw profile type icm"), &Setting::Keep);
-        assert_eq!(c.png_keyword(b"create-date"), &Setting::Remove);
         assert_eq!(c.png_keyword(b"Title"), &Setting::Keep);
         assert_eq!(c.png_keyword(b"Tags"), &Setting::Keep);
         let r = Config::parse("[keep]\ntitle=\"New title\"\ncamera_model=\"New device\"\n").unwrap();

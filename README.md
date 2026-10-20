@@ -32,6 +32,44 @@ C:\Tools\MetaClean\
 - `--config C:\path\custom.ini` を指定すれば、こちらが最優先（相対パスはカレントディレクトリ基準）。
 - `metaclean --print-default-config` でデフォルト設定を表示できる。
 
+## 対話型Shell・複数ファイル・GUI
+
+`metaclean.exe` を引数なしで起動するか `metaclean.exe shell` と入力すると、対話型Shellに入ります。
+`help` / `exit` / `quit` が使えます。各コマンドは実行直前に実行ファイルの隣の `metaclean.ini` を再読み込みします。
+
+```text
+metaclean> copy 写真.png, 旅行.webp, 写真フォルダ
+metaclean> in-place "2026,秋.png", 撮影フォルダ
+metaclean> help
+metaclean> exit
+```
+
+- カンマ区切りで複数のファイル・フォルダを一括指定可能。`、` / `，` でも区切れます。
+- **フォルダは再帰的**に処理します。ファイルとフォルダの混在も可能です。
+- **日本語パス**（WindowsのUnicodeパス）に対応しています。
+- ファイル名の中にカンマがある場合は、上の例のように **そのパス自体を二重引用符で囲みます**。
+- `copy` / `in-place` はOSのコマンドを起動せず、CLIと同じ処理エンジンを直接呼び出します。
+- 複数入力の重複、フォルダと配下ファイルの重複は開始前に拒否します。既存コピー先も処理前に検査します。
+
+従来の非対話型CLIも使用できます。
+
+```powershell
+metaclean "写真.png, 画像.webp" --copy
+metaclean "撮影フォルダ, 別フォルダ" --in-place
+```
+
+### GUI（Windows）
+
+Windows用の `metaclean-gui.exe` は別実行ファイルとして配布します。ドラッグ＆ドロップ、複数パス入力、コピー／上書きの切替、INIの明示指定、処理結果の確認ができます。操作はShell/CLIと**同じRustの処理エンジン**を使用し、外部のシェルコマンドを起動しません。
+
+```powershell
+cargo build --release --manifest-path gui/Cargo.toml
+# gui/target/release/metaclean-gui.exe
+```
+
+GUIのウィンドウ描画には `eframe/egui` を使用します。**CLIは引き続き外部クレート依存なし**、GUIは別クレートとして管理します。双方とも独自Rustコードで `unsafe` を禁止しています。
+配布パッケージは `metaclean-gui.exe` と `metaclean.ini` を同じフォルダに入れてください。
+
 ## 基本操作
 
 ```powershell

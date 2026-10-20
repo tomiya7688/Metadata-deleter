@@ -197,7 +197,7 @@ fn walk_dir(src: &Path, dst: Option<&Path>, mode: Mode, cfg: &Config, report: &m
     }
 }
 
-fn output_path(path: &Path, is_dir: bool) -> Result<PathBuf, String> {
+pub fn output_path(path: &Path, is_dir: bool) -> Result<PathBuf, String> {
     let name = if is_dir {
         path.file_name().ok_or("folder has no name")?
     } else {

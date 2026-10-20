@@ -13,7 +13,7 @@ jobs:
   rust:
     name: Build and unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -21,27 +21,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Unit tests
-        run: cargo test --bin metaclean --verbose
+        run: cargo test --lib --bin metaclean --verbose
       - name: Clippy
-        run: cargo clippy --all-targets --no-deps
+        run: cargo clippy --all-targets --no-deps -- -D warnings
       - name: Release build
         run: cargo build --release
-      - name: Package binary with adjacent INI (Linux)
+      - name: Package with adjacent INI (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p dist
           cp target/release/metaclean metaclean.ini dist/
-      - name: Package binary with adjacent INI (Windows)
+      - name: Package with adjacent INI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/metaclean.exe dist/
           Copy-Item metaclean.ini dist/
-      - name: Upload standalone package
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: metaclean-${{ runner.os }}
           path: dist/*
+          if-no-files-found: error
+
+  gui:
+    name: Windows graphical interface
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build safe Rust GUI
+        run: cargo build --release --manifest-path gui/Cargo.toml
+      - name: Package GUI and default INI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-gui | Out-Null
+          Copy-Item gui/target/release/metaclean-gui.exe dist-gui/
+          Copy-Item metaclean.ini dist-gui/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metaclean-GUI-Windows
+          path: dist-gui/*
           if-no-files-found: error

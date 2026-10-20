@@ -1,133 +1,96 @@
 #![forbid(unsafe_code)]
 
-mod config;
-mod exif;
-mod formats;
-mod ops;
-mod xmp;
-
-use config::{Config, DEFAULT_INI};
-use ops::Mode;
+use metaclean::config::{load_config, DEFAULT_INI};
+use metaclean::ops::Mode;
+use metaclean::shell::{parse_paths, run_batch, run_repl};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = r#"metaclean — local lossless PNG/JPEG/WebP metadata cleaner
 
 Usage:
-  metaclean <path> --in-place [--config <file.ini>]
-  metaclean <path> --copy     [--config <file.ini>]
+  metaclean                            Open the interactive shell
+  metaclean shell [--config file.ini]  Open the interactive shell
+  metaclean <path1,path2,...> --copy [--config file.ini]
+  metaclean <path1,path2,...> --in-place [--config file.ini]
   metaclean --print-default-config
 
---in-place              Update source images via temporary files.
---copy                  Write file_clean.png or directory_clean/ (no overwrite).
---config <file.ini>     Use a custom INI file.
---print-default-config  Print the default INI to stdout.
+Paths can be files or folders (recursively processed). For filenames with
+commas, quote the path INSIDE the list: '"photo,one.png",photo2.png'.
+Separate quoted arguments also work; do not use shell expansion/eval.
+Japanese filenames and directories are supported.
 
-With no --config, reads metaclean.ini BESIDE the executable (not the working directory).
-When absent, uses built-in defaults. An explicit --config path takes priority.
+Default config: metaclean.ini next to the executable, not the working directory.
+Explicit --config takes precedence. No --config and no adjacent INI = defaults.
 "#;
 
 struct Args {
-    source: PathBuf,
-    mode: Mode,
+    sources: Vec<PathBuf>,
+    mode: Option<Mode>,
     config: Option<PathBuf>,
+    shell: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Option<Args>, String> {
-    let mut source = None;
+    let mut sources = Vec::new();
     let mut mode = None;
     let mut config = None;
-    let mut iter = args.into_iter();
+    let mut shell = false;
+    let mut iter = args.into_iter().peekable();
+    if let Some(arg) = iter.peek() {
+        if arg == "shell" || arg == "--shell" {
+            shell = true;
+            iter.next();
+        }
+    } else {
+        shell = true;
+    }
     while let Some(arg) = iter.next() {
         match arg.to_str() {
-            Some("--help") | Some("-h") => {
-                print!("{USAGE}");
-                return Ok(None);
-            }
+            Some("--help") | Some("-h") => { print!("{USAGE}"); return Ok(None); }
             Some("--version") | Some("-V") => {
-                println!("metaclean {}", env!("CARGO_PKG_VERSION"));
-                return Ok(None);
+                println!("metaclean {}", env!("CARGO_PKG_VERSION")); return Ok(None);
             }
-            Some("--print-default-config") => {
-                print!("{DEFAULT_INI}");
-                return Ok(None);
-            }
-            Some("--in-place") | Some("--copy") => {
-                if mode.is_some() {
-                    return Err("choose exactly one of --in-place and --copy".into());
-                }
+            Some("--print-default-config") => { print!("{DEFAULT_INI}"); return Ok(None); }
+            Some("--in-place") | Some("--copy") if !shell => {
+                if mode.is_some() { return Err("choose exactly one of --in-place and --copy".into()); }
                 mode = Some(if arg == "--in-place" { Mode::InPlace } else { Mode::Copy });
             }
             Some("--config") => {
-                if config.is_some() {
-                    return Err("--config specified more than once".into());
-                }
+                if config.is_some() { return Err("--config specified more than once".into()); }
                 config = Some(PathBuf::from(iter.next().ok_or("--config requires a path")?));
             }
             Some(s) if s.starts_with('-') => return Err(format!("unknown option: {s}")),
-            _ => {
-                if source.is_some() {
-                    return Err("provide exactly one input path".into());
-                }
-                source = Some(PathBuf::from(arg));
-            }
+            Some(s) if !shell => sources.extend(parse_paths(s)?),
+            None if !shell => sources.push(PathBuf::from(arg)),
+            _ => return Err("interactive shell accepts only --config".into()),
         }
     }
-    Ok(Some(Args {
-        source: source.ok_or("missing input path")?,
-        mode: mode.ok_or("specify --in-place or --copy")?,
-        config,
-    }))
-}
-
-/// Search beside the executable, never beside the process working directory.
-/// The explicit --config option takes precedence (relative paths are CWD-relative).
-fn load_config(executable: &Path, explicit: Option<&Path>) -> Result<Config, String> {
-    if let Some(path) = explicit {
-        return Config::load(path);
-    }
-    let ini = executable.parent().ok_or("cannot determine executable directory")?.join("metaclean.ini");
-    if ini.is_file() {
-        Config::load(&ini)
-    } else if ini.exists() {
-        Err(format!("configuration path is not a regular file: {}", ini.display()))
-    } else {
-        Ok(Config::default())
-    }
+    if !shell && sources.is_empty() { return Err("missing input path".into()); }
+    if !shell && mode.is_none() { return Err("specify --in-place or --copy".into()); }
+    Ok(Some(Args { sources, mode, config, shell }))
 }
 
 fn execute() -> Result<ExitCode, String> {
-    let Some(args) = parse_args(std::env::args_os().skip(1))? else {
+    let Some(args) = parse_args(std::env::args_os().skip(1))? else { return Ok(ExitCode::SUCCESS); };
+    if args.shell {
+        run_repl(args.config.as_deref())?;
         return Ok(ExitCode::SUCCESS);
-    };
-    let config = load_config(
-        &std::env::current_exe().map_err(|e| format!("cannot locate executable: {e}"))?,
-        args.config.as_deref(),
-    )?;
-    let (report, output) = ops::run(&args.source, args.mode, &config)?;
-    if let Some(path) = output {
-        println!("Output: {}", path.display());
     }
-    println!(
-        "Cleaned: {}, unchanged: {}, copied: {}, skipped: {}, errors: {}",
-        report.cleaned, report.unchanged, report.copied, report.skipped, report.errors.len()
-    );
-    for error in &report.errors {
-        eprintln!("error: {error}");
-    }
-    if report.errors.is_empty() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::FAILURE)
-    }
+    let executable = std::env::current_exe()
+        .map_err(|e| format!("cannot locate executable: {e}"))?;
+    let config = load_config(&executable, args.config.as_deref())?;
+    let result = run_batch(&args.sources, args.mode.unwrap(), &config)?;
+    println!("{}", result.report());
+    Ok(if result.is_success() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 fn main() -> ExitCode {
     match execute() {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}\n\n{USAGE}");
+        Err(error) => {
+            eprintln!("error: {error}\n\n{USAGE}");
             ExitCode::FAILURE
         }
     }
@@ -136,32 +99,23 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn flags_are_required_and_exclusive() {
-        assert!(parse_args(["file.png".into()]).is_err());
-        assert!(parse_args(["file.png".into(), "--copy".into(), "--in-place".into()]).is_err());
-        assert!(parse_args(["file.png".into(), "--copy".into()]).unwrap().is_some());
+    fn cli_modes_and_shell() {
+        let args = parse_args(["a.png,b.jpg".into(), "--copy".into()]).unwrap().unwrap();
+        assert_eq!(args.sources, [PathBuf::from("a.png"), PathBuf::from("b.jpg")]);
+        assert_eq!(args.mode, Some(Mode::Copy));
+        assert!(parse_args(["a.png".into()]).is_err());
+        assert!(parse_args(["a.png".into(), "--copy".into(), "--in-place".into()]).is_err());
+        assert!(parse_args(["shell".into()]).unwrap().unwrap().shell);
+        assert!(parse_args(Vec::<OsString>::new()).unwrap().unwrap().shell);
     }
-
     #[test]
-    fn ini_is_loaded_from_executable_directory_not_cwd() {
+    fn ini_uses_executable_dir() {
         use std::fs;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let folder = std::env::temp_dir().join(format!(
-            "metaclean-config-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&folder).unwrap();
-        fs::write(folder.join("metaclean.ini"), "[keep]\ncreator=\"FromExe\"\n").unwrap();
-        let exe = folder.join("metaclean.exe");
-        let config = load_config(&exe, None).unwrap();
-        assert_eq!(config.creator.replacement(), Some("FromExe"));
-        let override_ini = folder.join("other.ini");
-        fs::write(&override_ini, "[keep]\ncreator=\"Explicit\"\n").unwrap();
-        assert_eq!(load_config(&exe, Some(&override_ini)).unwrap().creator.replacement(), Some("Explicit"));
-        fs::remove_file(folder.join("metaclean.ini")).unwrap();
-        assert_eq!(load_config(&exe, None).unwrap(), Config::default());
+        let folder = std::env::temp_dir().join(format!("metaclean-main-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("metaclean.ini"), "[keep]\ncreator=\"LocalName\"\n").unwrap();
+        assert_eq!(load_config(&folder.join("metaclean.exe"), None).unwrap().creator.replacement(), Some("LocalName"));
         fs::remove_dir_all(folder).unwrap();
     }
 }
