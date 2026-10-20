@@ -98,10 +98,37 @@ impl eframe::App for CleanGui {
     }
 }
 
+
+/// Load installed Japanese fonts at runtime, without distributing font files.
+fn load_japanese_font(ctx: &egui::Context) {
+    #[cfg(windows)]
+    let candidates = ["YuGothR.ttc", "meiryo.ttc", "msgothic.ttc", "msyh.ttc"]
+        .iter().map(|name| {
+            std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()))
+                .join("Fonts").join(name)
+        }).collect::<Vec<_>>();
+    #[cfg(not(windows))]
+    let candidates = vec![
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc")
+    ];
+    for candidate in candidates {
+        if let Ok(bytes) = std::fs::read(&candidate) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert("system-cjk".to_string(), egui::FontData::from_owned(bytes).into());
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().insert(0, "system-cjk".to_string());
+            }
+            ctx.set_fonts(fonts);
+            break;
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([780.0, 590.0]),
         ..Default::default()
     };
-    eframe::run_native("Metadata deleter", options, Box::new(|_cc| Ok(Box::<CleanGui>::default())))
+    eframe::run_native("Metadata deleter", options, Box::new(|cc| { load_japanese_font(&cc.egui_ctx); Ok(Box::<CleanGui>::default()) }))
 }
