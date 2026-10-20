@@ -11,14 +11,14 @@ permissions:
 
 jobs:
   cli-e2e:
-    name: Real-image CLI E2E (${{ matrix.os }})
+    name: Image CLI and shell E2E (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Run file and folder E2E tests
-        run: cargo test --test cli_e2e --test config_path -- --nocapture
+      - name: Run real-image CLI, interactive shell, and config E2E tests
+        run: cargo test --test cli_e2e --test shell_e2e --test config_path -- --nocapture

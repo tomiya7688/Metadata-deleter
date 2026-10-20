@@ -141,6 +141,16 @@ fn parse_value(value: &str, line: usize, key: &str) -> Result<Setting, String> {
     }
 }
 
+
+/** Load metaclean.ini next to the executable, unless --config was specified. */
+pub fn load_config(executable: &Path, explicit: Option<&Path>) -> Result<Config, String> {
+    if let Some(path) = explicit { return Config::load(path); }
+    let ini = executable.parent().ok_or("cannot determine executable directory")?.join("metaclean.ini");
+    if ini.is_file() { Config::load(&ini) }
+    else if ini.exists() { Err(format!("configuration path is not a regular file: {}", ini.display())) }
+    else { Ok(Config::default()) }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path)
